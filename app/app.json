@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Booking Deposits",
+    "slug": "booking-deposits",
+    "version": "0.1.0",
+    "scheme": "bookingdeposits",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.bookingdeposits"
+    },
+    "android": {
+      "package": "com.example.bookingdeposits",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "merchant.com.example.bookingdeposits",
+          "enableGooglePay": false
+        }
+      ]
+    ]
+  }
+}
