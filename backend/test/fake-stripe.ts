@@ -1,6 +1,6 @@
 import Stripe from 'stripe';
 import { vi } from 'vitest';
-import type { StripePort } from '../src/stripe/port.js';
+import { toThinEvent, type StripePort } from '../src/stripe/port.js';
 
 /**
  * In-memory stand-in for the Stripe API. It keeps PaymentIntents, SetupIntents and accounts
@@ -9,7 +9,7 @@ import type { StripePort } from '../src/stripe/port.js';
 export class FakeStripe implements StripePort {
   readonly intents = new Map<string, Stripe.PaymentIntent>();
   readonly setupIntents = new Map<string, Stripe.SetupIntent>();
-  readonly accounts = new Map<string, Stripe.Account>();
+  readonly accounts = new Map<string, Stripe.V2.Core.Account>();
   readonly refunds: Stripe.RefundCreateParams[] = [];
   /** The next off-session charge fails with this card error code. */
   failNextOffSession: string | null = null;
@@ -130,28 +130,58 @@ export class FakeStripe implements StripePort {
     return { id: this.nextId('re'), object: 'refund', amount: params.amount, status: 'succeeded' } as unknown as Stripe.Refund;
   });
 
-  createAccount = vi.fn(async (params: Stripe.AccountCreateParams, _key: string) => {
+  createAccount = vi.fn(async (params: Stripe.V2.Core.AccountCreateParams, _key: string) => {
     const account = {
       id: this.nextId('acct'),
-      object: 'account',
-      details_submitted: false,
-      charges_enabled: false,
-      payouts_enabled: false,
-      capabilities: { transfers: 'inactive' },
+      object: 'v2.core.account',
+      applied_configurations: ['recipient'],
+      dashboard: params.dashboard,
+      display_name: params.display_name,
+      defaults: { responsibilities: params.defaults?.responsibilities },
+      configuration: {
+        recipient: {
+          applied: true,
+          capabilities: {
+            stripe_balance: {
+              stripe_transfers: { status: 'pending', status_details: [] },
+              payouts: { status: 'pending', status_details: [] },
+            },
+          },
+        },
+      },
+      requirements: {
+        entries: [
+          {
+            awaiting_action_from: 'user',
+            description: 'Provide bank account details',
+            errors: [],
+            impact: {},
+            minimum_deadline: { status: 'currently_due' },
+            requested_reasons: [],
+          },
+        ],
+      },
       metadata: params.metadata ?? {},
-    } as unknown as Stripe.Account;
+      livemode: false,
+      created: '2030-03-04T09:30:00.000Z',
+    } as unknown as Stripe.V2.Core.Account;
     this.accounts.set(account.id, account);
-    return { ...account };
+    return structuredClone(account);
   });
 
   retrieveAccount = vi.fn(async (id: string) => {
     const account = this.accounts.get(id);
     if (!account) throw new Stripe.errors.StripeInvalidRequestError({ type: 'invalid_request_error', message: 'No such account' });
-    return { ...account };
+    return structuredClone(account);
   });
 
-  createAccountLink = vi.fn(async (params: Stripe.AccountLinkCreateParams) => {
-    return { object: 'account_link', url: `https://connect.stripe.com/setup/e/${params.account}/test` } as unknown as Stripe.AccountLink;
+  createAccountLink = vi.fn(async (params: Stripe.V2.Core.AccountLinkCreateParams) => {
+    return {
+      object: 'v2.core.account_link',
+      account: params.account,
+      url: `https://connect.stripe.com/setup/e/${params.account}/test`,
+      expires_at: '2030-03-04T09:35:00.000Z',
+    } as unknown as Stripe.V2.Core.AccountLink;
   });
 
   createLoginLink = vi.fn(async (accountId: string) => {
@@ -161,6 +191,10 @@ export class FakeStripe implements StripePort {
   /** Real signature verification, using the SDK's own code. */
   constructEvent = (payload: string, signature: string, secret: string) =>
     this.webhookSigner.webhooks.constructEvent(payload, signature, secret);
+
+  /** Real thin-event parsing and signature verification, using the SDK's own code. */
+  parseThinEvent = (payload: string, signature: string, secret: string) =>
+    toThinEvent(this.webhookSigner.parseEventNotification(payload, signature, secret));
 
   // Test helpers: what the customer or Stripe would do.
 
@@ -185,12 +219,22 @@ export class FakeStripe implements StripePort {
     Object.assign(this.requireIntent(id), { status: 'canceled', amount_capturable: 0 });
   }
 
+  /** The provider completes Stripe's hosted onboarding and Stripe activates the recipient capabilities. */
   finishOnboarding(accountId: string) {
-    Object.assign(this.accounts.get(accountId)!, {
-      details_submitted: true,
-      charges_enabled: true,
-      payouts_enabled: true,
-      capabilities: { transfers: 'active', card_payments: 'active' },
+    const account = this.accounts.get(accountId)!;
+    Object.assign(account, {
+      configuration: {
+        recipient: {
+          applied: true,
+          capabilities: {
+            stripe_balance: {
+              stripe_transfers: { status: 'active', status_details: [] },
+              payouts: { status: 'active', status_details: [] },
+            },
+          },
+        },
+      },
+      requirements: { entries: [] },
     });
   }
 

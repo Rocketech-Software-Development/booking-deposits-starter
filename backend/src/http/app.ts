@@ -161,6 +161,10 @@ export function createApp({ config, bookings, connect, webhooks }: AppDeps): Hon
     );
     return c.json({ received: true, result: await webhooks.handle(event) });
   });
+  app.post('/webhooks/stripe-thin', async (c) => {
+    const event = webhooks.verifyThin(await c.req.text(), c.req.header('stripe-signature'), config.stripeThinWebhookSecret);
+    return c.json({ received: true, result: await webhooks.handleThin(event) });
+  });
 
   return app;
 }

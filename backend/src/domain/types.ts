@@ -34,12 +34,14 @@ export interface Provider {
   durationMinutes: number;
   currency: string;
   policy: CancellationPolicy;
+  /** Accounts v2 connected account id (acct_...). */
   stripeAccountId: string | null;
-  chargesEnabled: boolean;
-  payoutsEnabled: boolean;
-  detailsSubmitted: boolean;
-  /** Destination charges need the `transfers` capability to be active. */
+  /** Recipient configuration: `stripe_balance.stripe_transfers` is active, so destination charges can pay this provider. */
   transfersActive: boolean;
+  /** Recipient configuration: `stripe_balance.payouts` is active, so money can reach the provider's bank. */
+  payoutsActive: boolean;
+  /** Stripe is waiting on the provider for information that is currently due or past due. */
+  requirementsDue: boolean;
 }
 
 export interface Slot {

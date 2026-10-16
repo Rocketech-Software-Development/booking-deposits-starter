@@ -3,24 +3,24 @@ import type { Config } from '../config.js';
 import type { Store } from '../db.js';
 import type { Provider } from '../domain/types.js';
 import { conflict, notFound } from '../errors.js';
-import type { StripePort } from '../stripe/port.js';
+import { ACCOUNT_INCLUDE, type StripePort } from '../stripe/port.js';
 
 export interface ConnectStatus {
   providerId: string;
   stripeAccountId: string | null;
-  detailsSubmitted: boolean;
-  chargesEnabled: boolean;
-  payoutsEnabled: boolean;
   transfersActive: boolean;
+  payoutsActive: boolean;
+  requirementsDue: boolean;
   acceptingBookings: boolean;
 }
 
 /**
- * Provider onboarding with Stripe Connect.
+ * Provider onboarding with Stripe Connect, Accounts v2.
  *
- * Accounts are created with controller properties that match an Express account: Stripe hosts
- * onboarding and the Express Dashboard, the platform pays Stripe fees and is liable for negative
- * balances. https://docs.stripe.com/connect/migrate-to-controller-properties
+ * Each provider gets a v2 Account with the `recipient` configuration and the
+ * `stripe_balance.stripe_transfers` capability, which is what destination charges need.
+ * The platform is the merchant of record, so no `merchant` configuration is requested.
+ * https://docs.stripe.com/connect/marketplace/tasks/create
  */
 export class ConnectService {
   constructor(
@@ -34,10 +34,14 @@ export class ConnectService {
     const { publicUrl } = this.deps.config;
     const link = await this.deps.stripe.createAccountLink({
       account: accountId,
-      type: 'account_onboarding',
-      // Live mode needs HTTPS URLs here. Test mode accepts http://localhost.
-      refresh_url: `${publicUrl}/connect/refresh?provider=${encodeURIComponent(provider.id)}`,
-      return_url: `${publicUrl}/connect/return?provider=${encodeURIComponent(provider.id)}`,
+      use_case: {
+        type: 'account_onboarding',
+        account_onboarding: {
+          // Live mode needs HTTPS URLs here. Test mode accepts http://localhost.
+          refresh_url: `${publicUrl}/connect/refresh?provider=${encodeURIComponent(provider.id)}`,
+          return_url: `${publicUrl}/connect/return?provider=${encodeURIComponent(provider.id)}`,
+        },
+      },
     });
     return { url: link.url };
   }
@@ -51,7 +55,7 @@ export class ConnectService {
     return this.status(this.requireProvider(provider.id));
   }
 
-  /** account.updated webhook. Returns false if the account is not one of ours. */
+  /** Webhooks (v1 `account.updated` or v2 `v2.core.account[...]` thin events). False if not ours. */
   async syncAccount(accountId: string): Promise<boolean> {
     const provider = this.deps.store.getProviderByAccount(accountId);
     if (!provider) return false;
@@ -60,10 +64,10 @@ export class ConnectService {
     return true;
   }
 
-  /** A one-time link into the Express Dashboard, where providers see payouts. */
+  /** A one-time link into the Express Dashboard, where providers see their balance and payouts. */
   async createDashboardLink(providerId: string): Promise<{ url: string }> {
     const provider = this.requireProvider(providerId);
-    if (!provider.stripeAccountId || !provider.detailsSubmitted) {
+    if (!provider.stripeAccountId || provider.requirementsDue) {
       throw conflict('onboarding_incomplete', 'Finish payout setup before opening the dashboard.');
     }
     const link = await this.deps.stripe.createLoginLink(provider.stripeAccountId);
@@ -77,33 +81,39 @@ export class ConnectService {
   private async createAccount(provider: Provider): Promise<string> {
     const account = await this.deps.stripe.createAccount(
       {
-        country: this.deps.config.merchantCountry,
-        controller: {
-          stripe_dashboard: { type: 'express' },
-          fees: { payer: 'application' },
-          losses: { payments: 'application' },
+        display_name: provider.name,
+        // Stripe-hosted Express Dashboard for balance and payouts.
+        dashboard: 'express',
+        identity: { country: this.deps.config.merchantCountry.toLowerCase() },
+        defaults: {
+          // Stripe recommends both on `application` for destination charges. The platform pays
+          // Stripe's fees and is liable for negative balances on the account.
+          responsibilities: { fees_collector: 'application', losses_collector: 'application' },
         },
-        capabilities: {
-          // Destination charges only need `transfers`. `card_payments` lets you switch to
-          // on_behalf_of later without onboarding everyone again.
-          transfers: { requested: true },
-          card_payments: { requested: true },
+        configuration: {
+          recipient: { capabilities: { stripe_balance: { stripe_transfers: { requested: true } } } },
         },
-        business_profile: { name: provider.name, product_description: provider.description },
+        include: ACCOUNT_INCLUDE,
         metadata: { provider_id: provider.id },
       },
       `provider:${provider.id}:account`,
     );
     this.deps.store.updateProviderConnect(provider.id, { stripeAccountId: account.id });
+    this.applyAccount(provider.id, account);
     return account.id;
   }
 
-  private applyAccount(providerId: string, account: Stripe.Account): void {
+  private applyAccount(providerId: string, account: Stripe.V2.Core.Account): void {
+    const balance = account.configuration?.recipient?.capabilities?.stripe_balance;
+    const entries = account.requirements?.entries ?? [];
     this.deps.store.updateProviderConnect(providerId, {
-      detailsSubmitted: account.details_submitted ?? false,
-      chargesEnabled: account.charges_enabled ?? false,
-      payoutsEnabled: account.payouts_enabled ?? false,
-      transfersActive: account.capabilities?.transfers === 'active',
+      transfersActive: balance?.stripe_transfers?.status === 'active',
+      payoutsActive: balance?.payouts?.status === 'active',
+      requirementsDue: entries.some(
+        (entry) =>
+          entry.awaiting_action_from === 'user' &&
+          (entry.minimum_deadline.status === 'currently_due' || entry.minimum_deadline.status === 'past_due'),
+      ),
     });
   }
 
@@ -117,10 +127,9 @@ export class ConnectService {
     return {
       providerId: provider.id,
       stripeAccountId: provider.stripeAccountId,
-      detailsSubmitted: provider.detailsSubmitted,
-      chargesEnabled: provider.chargesEnabled,
-      payoutsEnabled: provider.payoutsEnabled,
       transfersActive: provider.transfersActive,
+      payoutsActive: provider.payoutsActive,
+      requirementsDue: provider.requirementsDue,
       acceptingBookings: Boolean(provider.stripeAccountId) && provider.transfersActive,
     };
   }

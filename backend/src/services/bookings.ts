@@ -78,7 +78,7 @@ export interface ProviderView {
   currency: string;
   policy: Provider['policy'];
   acceptingBookings: boolean;
-  connect: { onboardingStarted: boolean; detailsSubmitted: boolean; chargesEnabled: boolean; payoutsEnabled: boolean };
+  connect: { onboardingStarted: boolean; transfersActive: boolean; payoutsActive: boolean; requirementsDue: boolean };
 }
 
 const LIVE_STATUSES: BookingStatus[] = ['pending_payment', 'confirmed', 'completed', 'no_show'];
@@ -116,9 +116,9 @@ export function toProviderView(p: Provider): ProviderView {
     acceptingBookings: Boolean(p.stripeAccountId) && p.transfersActive,
     connect: {
       onboardingStarted: Boolean(p.stripeAccountId),
-      detailsSubmitted: p.detailsSubmitted,
-      chargesEnabled: p.chargesEnabled,
-      payoutsEnabled: p.payoutsEnabled,
+      transfersActive: p.transfersActive,
+      payoutsActive: p.payoutsActive,
+      requirementsDue: p.requirementsDue,
     },
   };
 }

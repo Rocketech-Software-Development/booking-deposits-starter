@@ -8,8 +8,10 @@ export interface Config {
   stripePublishableKey: string;
   /** Signing secret for the platform webhook endpoint (payments, refunds, disputes). */
   stripeWebhookSecret: string;
-  /** Signing secret for the Connect webhook endpoint (account.updated). */
+  /** Signing secret for the Connect webhook endpoint (v1 account.updated). */
   stripeConnectWebhookSecret: string;
+  /** Signing secret for the thin-event destination (Accounts v2 v2.core.account[...] events). */
+  stripeThinWebhookSecret: string;
   /** Name shown in the PaymentSheet and in the cancellation policy text. */
   merchantDisplayName: string;
   /** Two-letter country of the platform. Used for new connected accounts and Apple Pay. */
@@ -53,6 +55,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     stripeWebhookSecret: webhookSecret,
     // The Stripe CLI signs platform and Connect events with the same secret.
     stripeConnectWebhookSecret: env.STRIPE_CONNECT_WEBHOOK_SECRET || webhookSecret,
+    stripeThinWebhookSecret: env.STRIPE_THIN_WEBHOOK_SECRET || webhookSecret,
     merchantDisplayName: env.MERCHANT_DISPLAY_NAME ?? 'Booking Deposits Demo',
     merchantCountry: (env.MERCHANT_COUNTRY ?? 'US').toUpperCase(),
     currency: (env.CURRENCY ?? 'usd').toLowerCase(),

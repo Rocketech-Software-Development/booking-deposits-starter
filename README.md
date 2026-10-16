@@ -1,15 +1,15 @@
 # Booking deposits with Stripe: Expo + Node starter
 
-Take a deposit when someone books, keep it when they don't show up, refund it when they cancel in time, and pay the provider through Stripe Connect. This repo is a working starter for that flow in a marketplace or booking app: an Expo (React Native) app and a small Node backend.
+Take a deposit when someone books, keep it when they don't show up, refund it when they cancel in time, and pay the provider through Stripe Connect (Accounts v2). This repo is a working starter for that flow in a marketplace or booking app: an Expo (React Native) app and a small Node backend.
 
 It fits any app where people book a time with someone: salons, barbers, tattoo studios, massage, tutors, trainers, clinics.
 
 What you get:
 
 - An Expo app. Customers browse providers, pick a slot, read the cancellation policy, and pay the deposit in Stripe's PaymentSheet. A demo screen covers the provider side.
-- A Node + TypeScript backend (Hono, SQLite through `node:sqlite`). It creates the Stripe intents, captures or cancels holds, charges no-show fees off-session, refunds, onboards providers to Connect, and handles webhooks.
+- A Node + TypeScript backend (Hono, SQLite through `node:sqlite`). It creates the Stripe intents, captures or cancels holds, charges no-show fees off-session, refunds, onboards providers with the Accounts v2 API, and handles webhooks.
 - Three deposit strategies: hold the deposit, charge it now, or only save the card.
-- 78 backend tests with Stripe mocked. No keys needed to run them.
+- 83 backend tests with Stripe mocked. No keys needed to run them.
 
 Everything runs in Stripe test mode. The backend refuses to start with a live key unless you set `ALLOW_LIVE_KEYS=true`.
 
@@ -24,20 +24,20 @@ Everything runs in Stripe test mode. The backend refuses to start with a live ke
                 v                                             | never amounts
 +------------------------------ Backend (backend/) -----------+-------------------+
 |  BookingService   quote, book, cancel, attended, no-show, refund, fees owed     |
-|  ConnectService   connected accounts, onboarding links, account status          |
-|  WebhookService   verify signature, skip repeated events, re-read the object    |
+|  ConnectService   v2 accounts (recipient config), Account Links v2, status       |
+|  WebhookService   snapshot + thin events, signature, dedupe, re-read the object |
 |  SQLite           providers, slots, users, bookings, payments, webhook events   |
 +---------------+---------------------------------------------^-------------------+
                 | stripe-node                                 | webhooks
                 v                                             |
 +---------------------------------- Stripe -------------------+-------------------+
 |  PaymentIntents (manual or automatic capture), SetupIntents, Refunds,           |
-|  CustomerSessions, connected accounts, Account Links, destination charges       |
+|  CustomerSessions, v2 Accounts and Account Links, destination charges          |
 +---------------+-----------------------------------------------------------------+
                 | each charge is a destination charge: the provider's account
                 | gets the amount minus your platform fee
                 v
-      Provider's connected account --(payouts on the account's schedule)--> bank
+      Provider's v2 account (recipient) --(payouts on the account's schedule)--> bank
 ```
 
 The app never decides how much to charge. It asks the backend for a quote, shows the policy text from the quote, and sends back a hash of that text with the booking. If the policy changed in between, the backend refuses the booking and the app shows the new text.
@@ -56,6 +56,20 @@ Each provider picks one in its policy (`backend/src/seed-data.ts`).
 In `hold` and `charge` the PaymentIntent sets `setup_future_usage: 'off_session'`, so the same card can be charged for a no-show fee later.
 
 Every charge is a [destination charge](https://docs.stripe.com/connect/destination-charges): `transfer_data.destination` is the provider's connected account and `application_fee_amount` is your cut (`PLATFORM_FEE_PERCENT`, 10 by default). Refunds set `reverse_transfer` and `refund_application_fee`, so the provider's share and your fee both go back to the customer.
+
+## Providers on Stripe Accounts v2
+
+Each provider is a v2 Account (`POST /v2/core/accounts`), set up the way Stripe's [marketplace guide](https://docs.stripe.com/connect/marketplace/tasks/create) describes:
+
+- `configuration.recipient` with the `stripe_balance.stripe_transfers` capability. That's the capability destination charges need.
+- `dashboard: 'express'`, so the provider gets Stripe's Express Dashboard for balance and payouts.
+- `defaults.responsibilities` with `fees_collector` and `losses_collector` both set to `application`, which Stripe recommends for destination charges.
+
+No `merchant` configuration: your platform is the merchant of record. You'd add it only for direct charges or for destination charges with `on_behalf_of`.
+
+Onboarding uses Account Links v2 (`POST /v2/core/account_links` with `use_case.type: 'account_onboarding'`). The provider counts as ready when `stripe_transfers` is `active`. The app also shows whether payouts to the bank are active and whether Stripe is waiting on the provider for information that is due now.
+
+Why v2: Stripe's docs now treat Standard, Express and Custom as legacy account types and point new platforms to Accounts v2. A v2 Account can also take more configurations later (for example `merchant`, if you move to `on_behalf_of`) without onboarding the provider again for details they already gave.
 
 A policy has three more settings: the deposit (fixed or a percentage of the price), how many hours before the start the customer can cancel for free, and `noShowFee`, the total owed for a no-show or a late cancellation. The deposit counts toward it. `noShowFee: 0` means "keep the deposit and charge nothing more".
 
@@ -87,7 +101,15 @@ npm run dev    # http://localhost:4242
 
 ### 2. Connect
 
-Before the first provider can onboard, finish the Connect setup in the Stripe Dashboard (test mode): the platform profile and the branding in Connect settings. Stripe needs both before onboarding works.
+Before the first provider can onboard, finish the Connect setup in the Stripe Dashboard (test mode): the platform profile, the branding in Connect settings, and, because the platform takes `losses_collector: application`, the review of your loss responsibilities that Stripe asks for. Your platform also needs Accounts v2 enabled; if it isn't, the first onboarding call fails with an error that says so.
+
+To get Accounts v2 events locally, run one more listener (thin events go to their own endpoint):
+
+```bash
+stripe listen --forward-thin-to localhost:4242/webhooks/stripe-thin --thin-events "*"
+```
+
+If it prints a different `whsec_...` than the first one, put it in `.env` as `STRIPE_THIN_WEBHOOK_SECRET`.
 
 Each provider has to finish onboarding before it can take deposits. You'll do that from the app in the next step.
 
@@ -148,12 +170,13 @@ Any future expiry date, any CVC, any postal code.
 | `POST /providers/:id/bookings/:bookingId/no-show` | provider | Applies the no-show policy. |
 | `POST /providers/:id/bookings/:bookingId/cancel` | provider | Releases and refunds everything. |
 | `POST /providers/:id/bookings/:bookingId/refund` | provider | Refunds charged money, all of it or `amount` cents. |
-| `POST /providers/:id/connect/onboarding-link` | provider | Creates the connected account on first use and returns an onboarding link. |
-| `GET /providers/:id/connect/status` | provider | Reads the account from Stripe. |
+| `POST /providers/:id/connect/onboarding-link` | provider | Creates the v2 account on first use and returns an Account Links v2 onboarding URL. |
+| `GET /providers/:id/connect/status` | provider | Reads the v2 account from Stripe (recipient capabilities, requirements). |
 | `POST /providers/:id/connect/dashboard-link` | provider | Login link to the Express Dashboard. |
 | `GET /connect/return`, `GET /connect/refresh` | Stripe redirect | Where onboarding sends the provider back. `refresh` makes a new link. |
 | `POST /webhooks/stripe` | Stripe | Platform events. |
-| `POST /webhooks/stripe-connect` | Stripe | Connect events (`account.updated`). |
+| `POST /webhooks/stripe-connect` | Stripe | Connected-account events (v1 `account.updated`). |
+| `POST /webhooks/stripe-thin` | Stripe | Accounts v2 thin events (`v2.core.account[...]`). |
 
 **Auth is a demo.** The app sends `x-demo-user` and `x-demo-provider` headers and the backend believes them. Replace `customerId()` and `providerId()` in `backend/src/http/app.ts` with your real session check before you put this anywhere public.
 
@@ -170,9 +193,12 @@ The handler verifies the signature against the raw body, skips event ids it has 
 | `setup_intent.succeeded`, `.setup_failed` | Card on file saved, or not. |
 | `charge.refunded` | Keeps refund totals right, including refunds made in the Dashboard. |
 | `charge.dispute.created` | Flags the booking. |
-| `account.updated` (Connect) | Stores whether the provider can receive transfers and payouts. |
+| `account.updated` (connected accounts scope) | Stripe sends this v1 event for v2 accounts too. The backend re-reads the v2 account. |
+| `v2.core.account[configuration.recipient].capability_status_updated`, `v2.core.account[requirements].updated`, other `v2.core.account[...]` (thin) | Re-reads the v2 account and stores transfers, payouts and requirements. |
 
-In production you register two endpoints: one for your account's events and one for connected accounts' events. Each has its own signing secret (`STRIPE_WEBHOOK_SECRET`, `STRIPE_CONNECT_WEBHOOK_SECRET`). The Stripe CLI uses one secret for both, which is why the second one is optional locally.
+Thin events carry only the event type and the id of the object, so the backend always fetches the account. Stripe sends `v2.core.account` events to the "Your account" scope and the v1 `account.updated` event to the "Connected accounts" scope ([Connect webhooks](https://docs.stripe.com/connect/webhooks)). Either one is enough to keep provider status current; the starter listens to both.
+
+In production you register three event destinations: snapshot events from your account, snapshot events from connected accounts, and thin events. Each has its own signing secret (`STRIPE_WEBHOOK_SECRET`, `STRIPE_CONNECT_WEBHOOK_SECRET`, `STRIPE_THIN_WEBHOOK_SECRET`). Locally the CLI usually signs everything with one secret, which is why the last two are optional.
 
 ## Read this before going live
 
@@ -221,9 +247,15 @@ Stripe [doesn't return its processing fees](https://support.stripe.com/questions
 
 With destination charges, Stripe takes disputed amounts and dispute fees from your balance. You can try to get the money back from the provider by reversing the transfer ([Stripe docs](https://docs.stripe.com/connect/destination-charges)). The starter only flags the booking.
 
-### Connect account type
+### Accounts v2
 
-Stripe's docs now call Standard, Express and Custom legacy types and point new platforms to the Accounts v2 API or to v1 [controller properties](https://docs.stripe.com/connect/migrate-to-controller-properties). The starter uses v1 with the controller properties that match Express: Stripe-hosted onboarding, the Express Dashboard, your platform pays Stripe's fees, and your platform covers negative balances. That last one means fraud losses on provider accounts are yours, so vet who you onboard. Moving to Accounts v2 means changing `backend/src/services/connect.ts`.
+The starter creates v2 Accounts with the `recipient` configuration and `losses_collector: application`. That means your platform covers negative balances on provider accounts, fraud losses included, so vet who you onboard. Some things to know:
+
+- Accounts v2 has to be enabled for your platform, and Stripe's own v2 examples send a `Stripe-Version` preview header. This starter uses the API version pinned by stripe-node 23 (`2026-09-30`). If Stripe rejects v2 calls on your account, check the [Accounts v2 guide](https://docs.stripe.com/connect/accounts-v2) for the version and access you need.
+- Responsibilities are fixed once set. Decide on `fees_collector` and `losses_collector` before you onboard real providers.
+- The Express Dashboard login link still comes from a v1 endpoint (`POST /v1/accounts/:id/login_links`). Stripe documents that v1 endpoints accept v2 account ids.
+- Customers stay as v1 `Customer` objects. Stripe also lets you represent customers as v2 Accounts with the `customer` configuration; the starter doesn't, to keep the payment side simple.
+- Some features still need Accounts v1, such as OAuth and the recipient service agreement (the Accounts v2 guide lists them). Cross-border payouts go through Global Payouts instead.
 
 ### Connect details
 
@@ -243,7 +275,7 @@ Stripe won't charge less than $0.50 in USD. [Other currencies](https://docs.stri
 backend/
   src/domain/policy.ts      deposit math, strategy choice, cancellation window, policy text
   src/services/bookings.ts  booking lifecycle and every Stripe money movement
-  src/services/connect.ts   connected accounts and onboarding
+  src/services/connect.ts   Accounts v2 accounts and onboarding
   src/services/webhooks.ts  signature check, dedupe, dispatch
   src/stripe/port.ts        the only file that calls stripe-node
   src/db.ts                 SQLite storage (swap for Postgres in a real app)
@@ -259,7 +291,7 @@ app/
 
 ```bash
 cd backend
-npm test         # 78 tests, no network
+npm test         # 83 tests, no network
 npm run typecheck
 cd ../app
 npm run typecheck
@@ -269,7 +301,7 @@ Stripe is replaced by `backend/test/fake-stripe.ts`, which keeps intents in memo
 
 ## Versions
 
-Built and checked in October 2026 with Expo SDK 57 (React Native 0.86), `@stripe/stripe-react-native` 0.64 (the version Expo pins for SDK 57), stripe-node 23 (API version `2026-09-30`), Hono 4 and Node 22. In API version 2026-09-30, PaymentIntents take `allowed_payment_method_types`. Older examples use `payment_method_types`.
+Built and checked in October 2026 with Expo SDK 57 (React Native 0.86), `@stripe/stripe-react-native` 0.64 (the version Expo pins for SDK 57), stripe-node 23 (API version `2026-09-30`, Accounts v2 for Connect), Hono 4 and Node 22. In API version 2026-09-30, PaymentIntents take `allowed_payment_method_types`. Older examples use `payment_method_types`.
 
 ## Built by Rocketech
 

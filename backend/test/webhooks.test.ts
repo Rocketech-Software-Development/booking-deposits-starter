@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CONNECT_WEBHOOK_SECRET, DEMO_USER_ID, WEBHOOK_SECRET, readJson, setup } from './helpers.js';
+import { CONNECT_WEBHOOK_SECRET, DEMO_USER_ID, THIN_WEBHOOK_SECRET, WEBHOOK_SECRET, readJson, setup } from './helpers.js';
 
 type TestApp = ReturnType<typeof setup>;
 
@@ -121,13 +121,38 @@ describe('webhook endpoint', () => {
   });
 });
 
-describe('connect webhook endpoint', () => {
-  it('updates provider onboarding state from account.updated', async () => {
+/** A provider that started v2 onboarding and then finished it at Stripe. */
+async function onboardedAtStripe(t: TestApp) {
+  t.store.updateProviderConnect('prov_hair', { stripeAccountId: null, transfersActive: false, payoutsActive: false });
+  await t.connect.createOnboardingLink('prov_hair');
+  const accountId = t.store.getProvider('prov_hair')!.stripeAccountId!;
+  t.stripe.finishOnboarding(accountId);
+  return accountId;
+}
+
+/** Posts a signed thin event (Accounts v2 events only carry a pointer to the object). */
+async function sendThinEvent(t: TestApp, type: string, accountId: string, options: { id?: string; secret?: string } = {}) {
+  eventCounter += 1;
+  const payload = JSON.stringify({
+    id: options.id ?? `evt_thin_${eventCounter}`,
+    object: 'v2.core.event',
+    type,
+    created: '2030-03-04T09:31:00.000Z',
+    livemode: false,
+    related_object: { id: accountId, type: 'v2.core.account', url: `/v2/core/accounts/${accountId}` },
+  });
+  const secret = options.secret ?? THIN_WEBHOOK_SECRET;
+  return t.app.request('/webhooks/stripe-thin', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'stripe-signature': t.stripe.signedHeader(payload, secret) },
+    body: payload,
+  });
+}
+
+describe('connect webhook endpoint (v1 account.updated, also sent for v2 accounts)', () => {
+  it('updates provider onboarding state', async () => {
     const t = setup();
-    t.store.updateProviderConnect('prov_hair', { stripeAccountId: null, transfersActive: false, detailsSubmitted: false });
-    await t.connect.createOnboardingLink('prov_hair');
-    const accountId = t.store.getProvider('prov_hair')!.stripeAccountId!;
-    t.stripe.finishOnboarding(accountId);
+    const accountId = await onboardedAtStripe(t);
 
     const response = await sendEvent(
       t,
@@ -136,12 +161,43 @@ describe('connect webhook endpoint', () => {
       { path: '/webhooks/stripe-connect', secret: CONNECT_WEBHOOK_SECRET, account: accountId },
     );
     expect(await readJson(response)).toEqual({ received: true, result: 'processed' });
-    expect(t.store.getProvider('prov_hair')).toMatchObject({ transfersActive: true, payoutsEnabled: true, detailsSubmitted: true });
+    expect(t.store.getProvider('prov_hair')).toMatchObject({ transfersActive: true, payoutsActive: true, requirementsDue: false });
   });
 
   it('uses its own signing secret', async () => {
     const t = setup();
     const response = await sendEvent(t, 'account.updated', { id: 'acct_1' }, { path: '/webhooks/stripe-connect' });
     expect(response.status).toBe(400);
+  });
+});
+
+describe('thin event endpoint (Accounts v2 events)', () => {
+  it('re-reads the account on a recipient capability change', async () => {
+    const t = setup();
+    const accountId = await onboardedAtStripe(t);
+
+    const response = await sendThinEvent(t, 'v2.core.account[configuration.recipient].capability_status_updated', accountId);
+    expect(response.status).toBe(200);
+    expect(await readJson(response)).toEqual({ received: true, result: 'processed' });
+    expect(t.stripe.retrieveAccount).toHaveBeenLastCalledWith(accountId);
+    expect(t.store.getProvider('prov_hair')).toMatchObject({ transfersActive: true, requirementsDue: false });
+  });
+
+  it('handles requirement updates once per event id', async () => {
+    const t = setup();
+    const accountId = await onboardedAtStripe(t);
+    const calls = t.stripe.retrieveAccount.mock.calls.length;
+
+    await sendThinEvent(t, 'v2.core.account[requirements].updated', accountId, { id: 'evt_thin_dup' });
+    const second = await sendThinEvent(t, 'v2.core.account[requirements].updated', accountId, { id: 'evt_thin_dup' });
+    expect(await readJson(second)).toEqual({ received: true, result: 'duplicate' });
+    expect(t.stripe.retrieveAccount.mock.calls.length).toBe(calls + 1);
+  });
+
+  it('ignores accounts that are not ours and rejects bad signatures', async () => {
+    const t = setup();
+    expect(await readJson(await sendThinEvent(t, 'v2.core.account.updated', 'acct_unknown'))).toMatchObject({ result: 'ignored' });
+    const forged = await sendThinEvent(t, 'v2.core.account.updated', 'acct_unknown', { secret: 'whsec_wrong' });
+    expect(forged.status).toBe(400);
   });
 });

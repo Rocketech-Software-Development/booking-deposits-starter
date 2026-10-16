@@ -20,10 +20,9 @@ CREATE TABLE IF NOT EXISTS providers (
   currency TEXT NOT NULL,
   policy_json TEXT NOT NULL,
   stripe_account_id TEXT UNIQUE,
-  charges_enabled INTEGER NOT NULL DEFAULT 0,
-  payouts_enabled INTEGER NOT NULL DEFAULT 0,
-  details_submitted INTEGER NOT NULL DEFAULT 0,
-  transfers_active INTEGER NOT NULL DEFAULT 0
+  transfers_active INTEGER NOT NULL DEFAULT 0,
+  payouts_active INTEGER NOT NULL DEFAULT 0,
+  requirements_due INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS slots (
   id TEXT PRIMARY KEY,
@@ -103,16 +102,15 @@ const PAYMENT_COLUMNS: Record<string, string> = {
 
 const PROVIDER_CONNECT_COLUMNS: Record<string, string> = {
   stripeAccountId: 'stripe_account_id',
-  chargesEnabled: 'charges_enabled',
-  payoutsEnabled: 'payouts_enabled',
-  detailsSubmitted: 'details_submitted',
   transfersActive: 'transfers_active',
+  payoutsActive: 'payouts_active',
+  requirementsDue: 'requirements_due',
 };
 
 export type BookingPatch = Partial<Pick<Booking, 'status' | 'setupIntentId' | 'paymentMethodId' | 'amountDue' | 'disputed'>>;
 export type PaymentPatch = Partial<Pick<Payment, 'amountCaptured' | 'amountRefunded' | 'status' | 'captureBefore' | 'lastError'>>;
 export type ProviderConnectPatch = Partial<
-  Pick<Provider, 'stripeAccountId' | 'chargesEnabled' | 'payoutsEnabled' | 'detailsSubmitted' | 'transfersActive'>
+  Pick<Provider, 'stripeAccountId' | 'transfersActive' | 'payoutsActive' | 'requirementsDue'>
 >;
 
 export class Store {
@@ -148,8 +146,8 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO providers (id, name, category, description, service_name, price_amount, duration_minutes, currency,
-           policy_json, stripe_account_id, charges_enabled, payouts_enabled, details_submitted, transfers_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           policy_json, stripe_account_id, transfers_active, payouts_active, requirements_due)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, category = excluded.category,
            description = excluded.description, service_name = excluded.service_name,
            price_amount = excluded.price_amount, duration_minutes = excluded.duration_minutes,
@@ -166,10 +164,9 @@ export class Store {
         p.currency,
         JSON.stringify(p.policy),
         p.stripeAccountId,
-        bool(p.chargesEnabled),
-        bool(p.payoutsEnabled),
-        bool(p.detailsSubmitted),
         bool(p.transfersActive),
+        bool(p.payoutsActive),
+        bool(p.requirementsDue),
       );
   }
 
@@ -406,10 +403,9 @@ function toProvider(row: Row): Provider {
     currency: str(row, 'currency'),
     policy: JSON.parse(str(row, 'policy_json')),
     stripeAccountId: nullableStr(row, 'stripe_account_id'),
-    chargesEnabled: flag(row, 'charges_enabled'),
-    payoutsEnabled: flag(row, 'payouts_enabled'),
-    detailsSubmitted: flag(row, 'details_submitted'),
     transfersActive: flag(row, 'transfers_active'),
+    payoutsActive: flag(row, 'payouts_active'),
+    requirementsDue: flag(row, 'requirements_due'),
   };
 }
 

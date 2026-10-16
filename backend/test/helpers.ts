@@ -6,6 +6,7 @@ import { FakeStripe } from './fake-stripe.js';
 
 export const WEBHOOK_SECRET = 'whsec_test_platform';
 export const CONNECT_WEBHOOK_SECRET = 'whsec_test_connect';
+export const THIN_WEBHOOK_SECRET = 'whsec_test_thin';
 export const T0 = new Date('2030-03-04T09:30:00.000Z');
 export const HOUR = 3_600_000;
 
@@ -17,6 +18,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     stripePublishableKey: 'pk_test_placeholder',
     stripeWebhookSecret: WEBHOOK_SECRET,
     stripeConnectWebhookSecret: CONNECT_WEBHOOK_SECRET,
+    stripeThinWebhookSecret: THIN_WEBHOOK_SECRET,
     merchantDisplayName: 'Test Bookings',
     merchantCountry: 'US',
     currency: 'usd',
@@ -41,10 +43,9 @@ export function setup(overrides: Partial<Config> = {}) {
   for (const provider of store.listProviders()) {
     store.updateProviderConnect(provider.id, {
       stripeAccountId: `acct_${provider.id}`,
-      detailsSubmitted: true,
-      chargesEnabled: true,
-      payoutsEnabled: true,
       transfersActive: true,
+      payoutsActive: true,
+      requirementsDue: false,
     });
   }
 

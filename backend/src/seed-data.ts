@@ -5,7 +5,7 @@ export const DEMO_USER_ID = 'user_demo';
 
 type ProviderSeed = Omit<
   Provider,
-  'stripeAccountId' | 'chargesEnabled' | 'payoutsEnabled' | 'detailsSubmitted' | 'transfersActive'
+  'stripeAccountId' | 'transfersActive' | 'payoutsActive' | 'requirementsDue'
 >;
 
 /** One provider per deposit strategy, so every flow can be tried from the app. */
@@ -71,10 +71,9 @@ export function seedDemoData(store: Store, now = new Date()): { providers: numbe
         ...seed,
         // Keep Connect onboarding across re-seeds.
         stripeAccountId: existing?.stripeAccountId ?? null,
-        chargesEnabled: existing?.chargesEnabled ?? false,
-        payoutsEnabled: existing?.payoutsEnabled ?? false,
-        detailsSubmitted: existing?.detailsSubmitted ?? false,
         transfersActive: existing?.transfersActive ?? false,
+        payoutsActive: existing?.payoutsActive ?? false,
+        requirementsDue: existing?.requirementsDue ?? false,
       });
       for (const offset of SLOT_OFFSETS_HOURS) {
         const startsAt = new Date(nextHour.getTime() + offset * 3_600_000);

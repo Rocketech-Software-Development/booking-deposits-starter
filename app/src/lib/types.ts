@@ -29,7 +29,7 @@ export interface Provider {
   durationMinutes: number;
   currency: string;
   acceptingBookings: boolean;
-  connect: { onboardingStarted: boolean; detailsSubmitted: boolean; chargesEnabled: boolean; payoutsEnabled: boolean };
+  connect: { onboardingStarted: boolean; transfersActive: boolean; payoutsActive: boolean; requirementsDue: boolean };
 }
 
 export interface ProviderDetail extends Provider {
@@ -94,11 +94,11 @@ export interface PaymentSheetParams {
   merchantCountryCode: string;
 }
 
+/** A provider's Stripe Accounts v2 state (recipient configuration). */
 export interface ConnectStatus {
   providerId: string;
-  detailsSubmitted: boolean;
-  chargesEnabled: boolean;
-  payoutsEnabled: boolean;
   transfersActive: boolean;
+  payoutsActive: boolean;
+  requirementsDue: boolean;
   acceptingBookings: boolean;
 }

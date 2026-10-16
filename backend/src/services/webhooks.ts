@@ -1,7 +1,7 @@
 import type Stripe from 'stripe';
 import type { Store } from '../db.js';
 import { badRequest } from '../errors.js';
-import { idOf, type StripePort } from '../stripe/port.js';
+import { idOf, type StripePort, type ThinEvent } from '../stripe/port.js';
 import type { BookingService } from './bookings.js';
 import type { ConnectService } from './connect.js';
 
@@ -34,6 +34,31 @@ export class WebhookService {
     }
   }
 
+  verifyThin(payload: string, signature: string | undefined, secret: string): ThinEvent {
+    if (!signature) throw badRequest('missing_signature', 'Missing Stripe-Signature header');
+    try {
+      return this.deps.stripe.parseThinEvent(payload, signature, secret);
+    } catch {
+      throw badRequest('invalid_signature', 'Webhook signature verification failed');
+    }
+  }
+
+  /**
+   * Thin events from Accounts v2, e.g. `v2.core.account[requirements].updated` or
+   * `v2.core.account[configuration.recipient].capability_status_updated`. They only carry the
+   * account id, so we read the account and store its state.
+   */
+  async handleThin(event: ThinEvent): Promise<WebhookResult> {
+    const { store, connect } = this.deps;
+    if (store.hasProcessedEvent(event.id)) return 'duplicate';
+    let handled = false;
+    if (event.type.startsWith('v2.core.account') && !event.type.startsWith('v2.core.account_link') && event.relatedObjectId) {
+      handled = await connect.syncAccount(event.relatedObjectId);
+    }
+    store.recordEvent(event.id, event.type, (this.deps.now?.() ?? new Date()).toISOString());
+    return handled ? 'processed' : 'ignored';
+  }
+
   async handle(event: Stripe.Event): Promise<WebhookResult> {
     const { store, bookings, connect } = this.deps;
     if (store.hasProcessedEvent(event.id)) return 'duplicate';
@@ -58,7 +83,7 @@ export class WebhookService {
       case 'charge.dispute.created':
         bookings.markDisputed(event.data.object);
         break;
-      case 'account.updated':
+      case 'account.updated': // Stripe also sends this v1 event for v2 accounts (Connect scope)
         handled = await connect.syncAccount(idOf(event.data.object) ?? event.account ?? '');
         break;
       default:

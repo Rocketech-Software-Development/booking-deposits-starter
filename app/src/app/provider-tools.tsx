@@ -116,15 +116,15 @@ export default function ProviderToolsScreen() {
         <Title>Payouts (Stripe Connect)</Title>
         {status ? (
           <>
-            <Row label="Details submitted" value={status.detailsSubmitted ? 'Yes' : 'No'} />
+            <Row label="Stripe needs more details" value={status.requirementsDue ? 'Yes' : 'No'} />
             <Row label="Can receive transfers" value={status.transfersActive ? 'Yes' : 'No'} />
-            <Row label="Payouts to bank" value={status.payoutsEnabled ? 'On' : 'Off'} />
+            <Row label="Payouts to bank" value={status.payoutsActive ? 'On' : 'Off'} />
           </>
         ) : null}
-        {!status?.acceptingBookings ? (
+        {!status?.acceptingBookings || status.requirementsDue ? (
           <Button title="Set up payouts" onPress={openOnboarding} loading={busy === 'onboard'} />
         ) : null}
-        {status?.detailsSubmitted ? (
+        {status?.acceptingBookings && !status.requirementsDue ? (
           <Button title="Open Express Dashboard" kind="secondary" onPress={openDashboard} loading={busy === 'dashboard'} />
         ) : null}
       </Card>

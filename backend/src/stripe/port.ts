@@ -27,13 +27,27 @@ export interface StripePort {
 
   createRefund(params: Stripe.RefundCreateParams, idempotencyKey: string): Promise<Stripe.Refund>;
 
-  createAccount(params: Stripe.AccountCreateParams, idempotencyKey: string): Promise<Stripe.Account>;
-  retrieveAccount(id: string): Promise<Stripe.Account>;
-  createAccountLink(params: Stripe.AccountLinkCreateParams): Promise<Stripe.AccountLink>;
+  // Connect, Accounts v2: https://docs.stripe.com/connect/accounts-v2
+  createAccount(params: Stripe.V2.Core.AccountCreateParams, idempotencyKey: string): Promise<Stripe.V2.Core.Account>;
+  retrieveAccount(id: string): Promise<Stripe.V2.Core.Account>;
+  createAccountLink(params: Stripe.V2.Core.AccountLinkCreateParams): Promise<Stripe.V2.Core.AccountLink>;
+  /** Express Dashboard login link. A v1 endpoint, which accepts v2 account ids. */
   createLoginLink(accountId: string): Promise<Stripe.LoginLink>;
 
+  /** Snapshot events (payments, refunds, disputes, v1 account.updated). */
   constructEvent(payload: string, signature: string, secret: string): Stripe.Event;
+  /** Thin events (v2.core.account[...] updates). Only the fields this backend uses. */
+  parseThinEvent(payload: string, signature: string, secret: string): ThinEvent;
 }
+
+export interface ThinEvent {
+  id: string;
+  type: string;
+  relatedObjectId: string | null;
+}
+
+/** Fields we need from a v2 Account. Without `include`, v2 returns null for these. */
+export const ACCOUNT_INCLUDE: Stripe.V2.Core.AccountRetrieveParams['include'] = ['configuration.recipient', 'requirements'];
 
 export function createStripePort(stripe: Stripe): StripePort {
   return {
@@ -51,13 +65,20 @@ export function createStripePort(stripe: Stripe): StripePort {
 
     createRefund: (params, idempotencyKey) => stripe.refunds.create(params, { idempotencyKey }),
 
-    createAccount: (params, idempotencyKey) => stripe.accounts.create(params, { idempotencyKey }),
-    retrieveAccount: (id) => stripe.accounts.retrieve(id),
-    createAccountLink: (params) => stripe.accountLinks.create(params),
+    createAccount: (params, idempotencyKey) => stripe.v2.core.accounts.create(params, { idempotencyKey }),
+    retrieveAccount: (id) => stripe.v2.core.accounts.retrieve(id, { include: ACCOUNT_INCLUDE }),
+    createAccountLink: (params) => stripe.v2.core.accountLinks.create(params),
     createLoginLink: (accountId) => stripe.accounts.createLoginLink(accountId),
 
     constructEvent: (payload, signature, secret) => stripe.webhooks.constructEvent(payload, signature, secret),
+    parseThinEvent: (payload, signature, secret) => toThinEvent(stripe.parseEventNotification(payload, signature, secret)),
   };
+}
+
+export function toThinEvent(notification: Stripe.V2.Core.EventNotification): ThinEvent {
+  // Some event types point at singleton objects without an id; we only need account events.
+  const related = ('related_object' in notification ? notification.related_object : null) as { id?: string } | null;
+  return { id: notification.id, type: notification.type, relatedObjectId: related?.id ?? null };
 }
 
 /** Card declines and `authentication_required` come back as StripeCardError. */

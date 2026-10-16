@@ -22,4 +22,5 @@ serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`Booking deposits API on http://localhost:${info.port}`);
   console.log(`Forward webhooks with: stripe listen --forward-to localhost:${info.port}/webhooks/stripe \\`);
   console.log(`  --forward-connect-to localhost:${info.port}/webhooks/stripe-connect`);
+  console.log(`Accounts v2 thin events: stripe listen --forward-thin-to localhost:${info.port}/webhooks/stripe-thin --thin-events "*"`);
 });
